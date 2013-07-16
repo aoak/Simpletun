@@ -60,6 +60,7 @@ int client_connect ();
 struct input {
 	int port;								/* Port number to be used for connection */
 	int over;								/* Underlying type of connection SOCK_DGRAM/SOCK_STREAM */
+	int verbose;							/* verbose tunneling flag */
 	char dev[BUFF_SIZE];					/* Tun device name */
 	char serv[BUFF_SIZE];					/* Server name or ip address (for client) */
 	char mode;								/* Mode of operation */
@@ -78,6 +79,7 @@ void main (int argc, char * argv[]) {
 	struct ifreq ifr;		/* structure having parameters for ioctl() call */
 
 	strcpy(prog_name, argv[0]);
+	in.verbose = 0;
 	check_usage(argc,argv);
 	//strcpy(in.dev, "tun2");
 
@@ -325,7 +327,8 @@ void tunnel (int sockfd, int tunfd) {
 					raise_error("sendto() failed");
 			}
 			
-			printf("Read %d bytes from tun and wrote %d on socket\n", read_bytes, wrote_bytes);
+			if (in.verbose == 1)
+				printf("Read %d bytes from tun and wrote %d on socket\n", read_bytes, wrote_bytes);
 
 		}
 
@@ -372,7 +375,8 @@ void tunnel (int sockfd, int tunfd) {
 			if (wrote_bytes < 0)
 				raise_error("write() on tun failed");
 
-			printf("Read %d bytes from socket and wrote %d on tun\n", read_bytes, wrote_bytes);
+			if (in.verbose == 1)
+				printf("Read %d bytes from socket and wrote %d on tun\n", read_bytes, wrote_bytes);
 		}
 
 
@@ -423,10 +427,13 @@ void check_usage (int argc, char *argv[] ) {
 	bzero(in.dev, BUFF_SIZE);
 	bzero(in.port_str, 10);
 
-	while ((arg = getopt(argc, argv, "hm:s:d:p:o:")) != -1) {
+	while ((arg = getopt(argc, argv, "vhm:s:d:p:o:")) != -1) {
 
 		switch (arg) {
 			case 'h':	print_usage();
+						break;
+
+			case 'v':	in.verbose = 1;
 						break;
 
 			case 'm':	if (strcmp(optarg,"s") == 0)
@@ -504,13 +511,14 @@ void check_usage (int argc, char *argv[] ) {
 
 void print_usage () {
 	
-	printf("Usage: %s -m [mode] -d [device name] -p [port] -o [underlying prot] -s [server]\n\
+	printf("Usage: %s -m [mode] -d [device name] -p [port] -o [underlying prot] -s [server] -v\n\
 	where,\n\
 		-m:	mode		: either of 's' or 'c' signifying whether to act as client or server.\n\
 		-d:	device name	: tun device name\n\
 		-p:	port		: port number used by client and server (for listening in case of server)\n\
 		-o:	protocol	: name of the underlying protocol over which tunneling happens. can be 'tcp' or 'udp'\n\
 		-s:	server name	: name or ip address of the server. (Only considered in case of client)\n\
+		-v: verbose		: print the info messages which may slow down the performance\n\
 		-h:	help		: print this usage\n", prog_name);
 	
 	exit(0);
