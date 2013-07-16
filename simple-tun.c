@@ -104,6 +104,16 @@ void main (int argc, char * argv[]) {
 
 
 
+/* 
+	mktun: This function takes a tun device name, flags and structure for ioctl()
+		   and creates a tun device. This function is almost the same as given on
+		   kernel.org on page https://www.kernel.org/doc/Documentation/networking/tuntap.txt
+	
+	input: char * <string containing the tun device name. Can be null>
+		   int <flags for ioctl() call>
+		   struct ifreq * <structure for ioctl() parameters>
+	returns: int <file descriptor of the tun device> (is -ve if fails)
+*/
 
 int mktun (char * dev, int flags, struct ifreq * ifr) {
 
@@ -185,6 +195,17 @@ int settun (int tun_fd, struct ifreq * ifr, int pers) {
 
 
 
+
+
+/* 
+	read_bytes_tun: This function reads data from tun device and displays how many
+					bytes it read on stdout. This is used for testing the read from
+					tun device.
+	
+	input:  int <tun device descriptor>
+			struct ifreq * <pointer to structure ifreq which was populated during mktun().
+	returns: void
+*/
 
 
 void read_bytes_tun (int tun_fd, struct ifreq * ifr) {
