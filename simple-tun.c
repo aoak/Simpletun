@@ -11,6 +11,8 @@
 #include <sys/ioctl.h>
 #include <errno.h>
 #include <netdb.h>
+#include <pwd.h>
+
 
 
 /* This is sucky because I don't know the cause of it, but include has to be done
@@ -56,16 +58,27 @@ int client_connect ();
 
 
 
+struct user {
+	char uname[BUFF_SIZE];
+	struct passwd uinfo;
+};
+
+
+struct tun_dev {
+	char device[BUFF_SIZE];
+	int pers;
+};
 
 struct input {
 	int port;								/* Port number to be used for connection */
 	int over;								/* Underlying type of connection SOCK_DGRAM/SOCK_STREAM */
 	int verbose;							/* verbose tunneling flag */
-	char dev[BUFF_SIZE];					/* Tun device name */
+	struct tun_dev dev;
 	char serv[BUFF_SIZE];					/* Server name or ip address (for client) */
 	char mode;								/* Mode of operation */
 	char port_str[10];						/* Port number as a string */
 	struct addrinfo server, * serv_ptr;		/* Address info of server (for client) */
+	struct user usr;
 } in;
 
 
@@ -84,7 +97,7 @@ void main (int argc, char * argv[]) {
 	//strcpy(in.dev, "tun2");
 
 
-	tfd = mktun(in.dev, IFF_TUN | IFF_NO_PI, &ifr);
+	tfd = mktun(in.dev.device, IFF_TUN | IFF_NO_PI, &ifr);
 
 	if (tfd < 0) {
 		printf("Error creating tun device\n");
@@ -92,6 +105,12 @@ void main (int argc, char * argv[]) {
 	} else {
 		printf("Created tun device(%d): %s\n", tfd, ifr.ifr_name);
 	}
+
+	
+	if (in.mode == 'm') {
+		settun(tfd, &ifr, in.dev.pers);
+		exit(0);
+		}
 
 	nfd = net_connect();
 
@@ -156,7 +175,16 @@ int mktun (char * dev, int flags, struct ifreq * ifr) {
 
 int settun (int tun_fd, struct ifreq * ifr, int pers) {
 
-	int owner = -1, group = 1;
+	int owner = -1, group = -1;
+	char * buff;
+	int buffsize;
+	struct passwd * s;
+
+	buffsize = sysconf(_SC_GETPW_R_SIZE_MAX);
+	buff = (char *) malloc (buffsize);
+	if (buff == NULL)
+		raise_error("error allocating memory for passwd buffer");
+
 
 	if (! pers) {
 		/* We want to make this fd non persistent. */
@@ -164,10 +192,22 @@ int settun (int tun_fd, struct ifreq * ifr, int pers) {
 			raise_error("ioctl() - unset persistence");
 	}
 	else {
+		
+		if (in.usr.uname != NULL) {
+			/* If user was given, get his uid and gid */
+			getpwnam_r(in.usr.uname, &in.usr.uinfo, buff, buffsize, &s);
 
-		/* Get effective uid and gid */
-		owner = geteuid();
-		group = getegid();
+			if (s == NULL)
+				raise_error("getpwnam_r()");
+
+			owner = in.usr.uinfo.pw_uid;
+			group = in.usr.uinfo.pw_gid;
+
+		} else {
+			/* Get effective uid and gid */
+			owner = geteuid();
+			group = getegid();
+		}
 
 		/* Set owner using ioctl() */
 		if (owner != -1)
@@ -191,6 +231,7 @@ int settun (int tun_fd, struct ifreq * ifr, int pers) {
 		printf(" gid: %d,", group);
 	printf(" persistence: %d\n", pers);
 
+	free(buff);
 	return 0;
 }
 
@@ -424,14 +465,22 @@ void check_usage (int argc, char *argv[] ) {
 	int arg;
 
 	bzero(in.serv, BUFF_SIZE);
-	bzero(in.dev, BUFF_SIZE);
+	bzero(in.dev.device, BUFF_SIZE);
 	bzero(in.port_str, 10);
+	in.dev.pers = 0;
+	
 
-	while ((arg = getopt(argc, argv, "vhm:s:d:p:o:")) != -1) {
+	while ((arg = getopt(argc, argv, "evhm:s:d:p:o:u:")) != -1) {
 
 		switch (arg) {
 			case 'h':	print_usage();
 						break;
+
+			case 'e':	in.dev.pers = 1;
+						break;
+
+			case 'u':	strcpy(in.usr.uname, optarg);
+						break;	
 
 			case 'v':	in.verbose = 1;
 						break;
@@ -440,6 +489,8 @@ void check_usage (int argc, char *argv[] ) {
 							in.mode = 's';
 						else if (strcmp(optarg,"c") == 0)
 							in.mode = 'c';
+						else if (strcmp(optarg,"m") == 0)
+							in.mode = 'm';
 						else {
 							fprintf(stderr,"Invalid mode of operation %s. Valid modes are 'c' and 's'\n",optarg);
 							exit(1);
@@ -449,7 +500,7 @@ void check_usage (int argc, char *argv[] ) {
 			case 's':	strcpy(in.serv,optarg);
 						break;
 
-			case 'd':	strcpy(in.dev,optarg);
+			case 'd':	strcpy(in.dev.device,optarg);
 						break;
 
 			case 'p':	strcpy(in.port_str,optarg);
@@ -477,20 +528,31 @@ void check_usage (int argc, char *argv[] ) {
 
 	}
 
-	if (in.mode != 'c' && in.mode != 's') {
+
+	if (in.mode != 'c' && in.mode != 's' && in.mode != 'm') {
 		fprintf(stderr,"Operation mode is mandetory argument. use -m to specify the mode\n");
 		exit(1);
 	}
 
-	if (in.dev[0] == 0 || in.port_str[0] == 0) {
-		fprintf(stderr,"Port number and device name are mandetory arguments. use -p and -d to specify them\n");
-		exit(1);
+	if (in.dev.device[0] == 0)
+		raise_error("Device name is mandetory argument. use -d to specify. Use -h for help");
+
+	/* Usage check for tunneling operations */
+	if (in.mode != 'm') {
+		if (in.port_str[0] == 0)
+		raise_error("Port number is mandetory argument in while tunnelling. use -p to specify. Use -h for help");
+		
+		if (in.mode == 'c' && in.serv[0] == 0) 
+			raise_error("Client mode needs option -s with server name/ip as an argument");
+		
+	} else if (in.mode == 'm') {
+
+	/* Usage check for creation of tun device */
+		if (in.dev.pers != 0 && in.dev.pers != 1)
+			raise_error("Invalid persistence value given");
+
 	}
 
-	if (in.mode == 'c' && in.serv[0] == 0) {
-		fprintf(stderr,"Client mode needs option -s with server name/ip as an argument\n");
-		exit(1);
-	}
 }
 
 
@@ -511,13 +573,23 @@ void check_usage (int argc, char *argv[] ) {
 
 void print_usage () {
 	
-	printf("Usage: %s -m [mode] -d [device name] -p [port] -o [underlying prot] -s [server] -v\n\
+	printf("Usage: %s -m [mode] -d [device name] -p [port] -o [underlying prot] -s [server] -v \n\
+					  -m [mode] -d [device name] -e -u [user]\n\
 	where,\n\
-		-m:	mode		: either of 's' or 'c' signifying whether to act as client or server.\n\
+		-m:	mode		: either of 's' or 'c' signifying whether to act as client or server while tunnelling,\n\
+							OR\n\
+						  can be 'm' which tells the program that it is supposed to create new tun device.\n\
 		-d:	device name	: tun device name\n\
-		-p:	port		: port number used by client and server (for listening in case of server)\n\
+		-p:	port		: port number used by client and server for tunnelling (for listening in case of server).\n\
+						  only significant in case mode isn't 'm'\n\
 		-o:	protocol	: name of the underlying protocol over which tunneling happens. can be 'tcp' or 'udp'\n\
+						  only significant in case mode isn't 'm'\n\
 		-s:	server name	: name or ip address of the server. (Only considered in case of client)\n\
+						  only significant in case mode isn't 'm'\n\
+		-e: persistence : Whether to set device persistent or not\n\
+						  only significant in case mode is 'm'\n\
+		-u: user		: User to set as owner of the device\n\
+						  only significant in case mode is 'm'\n\
 		-v: verbose		: print the info messages which may slow down the performance\n\
 		-h:	help		: print this usage\n", prog_name);
 	
