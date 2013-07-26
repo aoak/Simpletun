@@ -69,29 +69,17 @@ struct input {
 	char port_str[10];						/* Port number as a string */
 	struct addrinfo server, * serv_ptr;		/* Address info of server (for client) */
 	struct user usr;
+	struct sockaddr_storage peer_addr;		/* structure to store address of the client */
+	socklen_t peer_addr_len;				/* in case of UDP server */
+
 } in;
 
-/* Packet node in the queue. */
-struct node {
-	struct node * next;
-	char * packet;
-	int packet_len;
-};
-
-/* Queue structure */
-struct queue {
-	struct node * head;
-	struct node * tail;
-	int is_empty;							/* is queue empty? can be 1 (true) or 0 */
-	int num_ele;							/* Number of elements in the queue. */
-	pthread_mutex_t mutex;					/* Mutex for synchronized access to the queue */
-};
 
 /* Thread function can have only void* input. Hence arguments to the thread function
 are kept in a structure and the pointer is passed */
 struct thread_args {
-	int fd;									/* Device file descriptor */
-	struct queue * n2t_queue, * t2n_queue;	/* Two queues */
+	int tun_fd;								/* Device file descriptor */
+	int sock_fd;
 };
 
 
@@ -100,7 +88,7 @@ struct thread_args {
 
 
 int mktun (char * , int , struct ifreq * );
-int settun (int , struct ifreq * , int );
+void settun (int , struct ifreq * , int );
 void read_bytes_tun (int , struct ifreq * );
 void tunnel (int, int);
 void check_usage (int, char * []);
@@ -109,11 +97,8 @@ void raise_error (const char *);
 int net_connect();
 int server_connect ();
 int client_connect ();
-int push (struct queue * , char * , int );
-struct node * pop (struct queue * );
-struct queue * new_queue ();
-void * tun_io (void * );
-void * sock_io (void * );
+void * tun_to_sock (void * );
+void * sock_to_tun (void * );
 
 
 
@@ -129,7 +114,6 @@ void main (int argc, char * argv[]) {
 	strcpy(prog_name, argv[0]);
 	in.verbose = 0;
 	check_usage(argc,argv);
-	//strcpy(in.dev, "tun2");
 
 
 	tfd = mktun(in.dev.device, IFF_TUN | IFF_NO_PI, &ifr);
@@ -205,16 +189,30 @@ int mktun (char * dev, int flags, struct ifreq * ifr) {
 
 
 
+/*
+	settun: This function takes a tun device descriptor, structure ifreq and
+			persistence flag and sets the persistence as well as owner of the
+			tun device. This eliminates the need of a tool like openvpn to create
+			a pesistent tun device with given user as owner
+	
+	input: int <tun device descriptor>
+		   struct ifreq * <pointer to ifreq structure associated with the tun>
+		   int <persistence flag>. (if 1, we need to set device to persistent)
+	
+	returns: void. (exits on failure)
+*/
 
 
 
-int settun (int tun_fd, struct ifreq * ifr, int pers) {
+
+void settun (int tun_fd, struct ifreq * ifr, int pers) {
 
 	int owner = -1, group = -1;
 	char * buff;
 	int buffsize;
 	struct passwd * s;
 
+	/* buffer for getpwnam_r() */
 	buffsize = sysconf(_SC_GETPW_R_SIZE_MAX);
 	buff = (char *) malloc (buffsize);
 	if (buff == NULL)
@@ -239,7 +237,7 @@ int settun (int tun_fd, struct ifreq * ifr, int pers) {
 			group = in.usr.uinfo.pw_gid;
 
 		} else {
-			/* Get effective uid and gid */
+			/* Get effective uid and gid of current user instead*/
 			owner = geteuid();
 			group = getegid();
 		}
@@ -260,8 +258,6 @@ int settun (int tun_fd, struct ifreq * ifr, int pers) {
 
 	}
 
-/*	if (in.dev.ip_addr[0] != 0)
-		set_ip(tun_fd, ifr);*/
 	
 	printf("tun device: %s,",ifr->ifr_name);
 	if (owner != -1)
@@ -310,10 +306,15 @@ void read_bytes_tun (int tun_fd, struct ifreq * ifr) {
 
 
 /*
-	tunnel: This function is where tunnelling actually happens. We use select() call
-			to juggle between tun and network devices. We read the data from one
-			device and write on other. This way tun data is sent over network and
-			data received over network is written to tun.
+	tunnel: This function is where tunnelling actually happens. We spawn two
+			threads, one reads from tun and writes on socket and other reads
+			from socket and writes on tun. 
+			Single threaded version uses select() to juggle between two descriptors. 
+			This can cause delay in read() or write() because select can return any 
+			descriptor from the set. Multi-threading will ensure that the device is
+			read as soon as it is ready to be read and the data is immidiately written
+			on the other device. (Well, the device will serialize the reads and writes
+			but that is on lower level than the API)
 	
 	input:	int <network socket descriptor>,
 			int <tun device descriptor>
@@ -327,30 +328,30 @@ void read_bytes_tun (int tun_fd, struct ifreq * ifr) {
 void tunnel (int sockfd, int tunfd) {
 
 
+	/* We need two threads, one for transferring data from tun to socket
+	and other from socket to tun */
 	pthread_t t2n, n2t;
 	int ret1, ret2;
-	struct queue * n2tq, * t2nq;
+
+	/* Thread function can only take void pointer as an argument, so we need
+	a structure to hold all the arguments and then we will pass the pointer 
+	to the structure as an argument */
 	struct thread_args tun_to_net, net_to_tun;
 	
+	net_to_tun.tun_fd = tunfd;
+	net_to_tun.sock_fd = sockfd;
 
-	n2tq = new_queue();
-	t2nq = new_queue();
-
-	if (n2tq == NULL || t2nq == NULL)
-		raise_error("new_queue() failed");
-
-	net_to_tun.fd = sockfd;
-	net_to_tun.n2t_queue = n2tq;
-	net_to_tun.t2n_queue = t2nq;
-
-	tun_to_net.fd = tunfd;
-	tun_to_net.n2t_queue = n2tq;
-	tun_to_net.t2n_queue = t2nq;
+	tun_to_net.tun_fd = tunfd;
+	tun_to_net.sock_fd = sockfd;
 
 	printf("Starting the tunnelling threads\n");
-	ret1 = pthread_create( &t2n, NULL, tun_io, (void *) &tun_to_net);
-	ret2 = pthread_create( &n2t, NULL, sock_io, (void *) &net_to_tun);
+	/* spawn the two threads */
+	ret1 = pthread_create( &t2n, NULL, tun_to_sock, (void *) &tun_to_net);
+	ret2 = pthread_create( &n2t, NULL, sock_to_tun, (void *) &net_to_tun);
 
+	/* Wait for threads to join. (This is actually useless in this implementation
+	cause we are running infinite loops in the threads and not catching any signals
+	to exit graacefully) */
 	pthread_join(t2n, NULL);
 	printf("Thread tun-to-network returned\n");
 	pthread_join(n2t, NULL);
@@ -361,140 +362,98 @@ void tunnel (int sockfd, int tunfd) {
 
 
 
+/*
+	sock_to_tun: This function is ran in a thread which checks if the socket is ready
+				 to be read and if it is, reads the data from socket and writes it 
+				 immidiately on the tun device
+	
+	input: void * <pointer to the thread arguments structure>
+	returns: void * (just syntactically. It will never return as it has an infinite loop)
+*/
 
 
 
-void * sock_io (void * ptr) {
-
+void * sock_to_tun (void * ptr) {
 
 	struct thread_args * args;
 	args = (struct thread_args *) ptr;
 
-	int fd;
-	struct queue * n2t, * t2n;
-	char * buff;
-	int stat = 0;
+	/* Extract the arguments from the structure */
+	int tun_fd = args->tun_fd;
+	int sock_fd = args->sock_fd;
+	char buff[BUFF_SIZE];
+	int read_bytes, wrote_bytes, stat;
 	int len;
 
-	fd = args->fd;
-	n2t = args->n2t_queue;
-	t2n = args->t2n_queue;
-
-	struct timeval timeout;
-	timeout.tv_sec = 0;
-	timeout.tv_usec = 10000;
-
+	in.peer_addr_len = sizeof(in.peer_addr);
 	fd_set r_set;
-	struct sockaddr_storage peer_addr;
-	socklen_t peer_addr_len = sizeof(peer_addr);
-
 
 	printf("Thread %ld: Starting operations on socket\n",pthread_self());
 	while (1) {
 		
-		/* Do pending operations from socket device to incoming queue */
+		/* Wait till socket is ready to be read */
 		FD_ZERO(&r_set);
-		FD_SET(fd, &r_set);
-		stat = select(fd+1, &r_set, NULL, NULL, &timeout);
-		if (stat < 0 && errno == EINTR);
+		FD_SET(sock_fd, &r_set);
+
+		stat = select(sock_fd+1, &r_set, NULL, NULL, NULL);
+
+		if (stat < 0 && errno == EINTR)
+			continue;
 
 		if (stat < 0)
 			raise_error("select() failed");
 
 
-		if (FD_ISSET(fd, &r_set)) {
+		if (FD_ISSET(sock_fd, &r_set)) {
 
+			/* Socket is ready to be read. So read the data into buffer */
 			stat = 0;
 			len = 0;
-			buff = (char *) malloc (BUFF_SIZE * sizeof(char));
-			if (buff == NULL)
-				raise_error("malloc() failed");
+			read_bytes = 0;
+			wrote_bytes = 0;
 
 			bzero(buff, BUFF_SIZE);
 
 			if (in.over == SOCK_DGRAM) {
 
+				/* In case of UDP, we need to read the data using recvfrom() call */
 				if (in.mode == 'c')
-					stat = recvfrom(fd, buff, BUFF_SIZE, 0, NULL, NULL);
+					/* In case of UDP client, we already have server's address, so no sweat */
+					read_bytes = recvfrom(sock_fd, buff, BUFF_SIZE, 0, NULL, NULL);
 				else if (in.mode == 's')
-					stat = recvfrom(fd, buff, BUFF_SIZE, 0, (struct sockaddr *) &peer_addr, &peer_addr_len);
+					/* In case of UDP server, we need to store the address of client in a structure
+					so that we can use it to send a response. We are assuming that server is always
+					contacted by the client first */
+					read_bytes = recvfrom(sock_fd, buff, BUFF_SIZE, 0, (struct sockaddr *) &in.peer_addr, &in.peer_addr_len);
 				else
 					raise_error("invalid mode");
 
-				if (stat < 0)
+				if (read_bytes < 0)
 					raise_error("recvfrom() failed");
 
 
 			} else {
 
-				stat = read(fd, (char *) &len, sizeof(len));
-				if (stat < 0)
+				/* In case of TCP, we read the length of the packet first so that we
+				can read the exact packet */
+				read_bytes = read(sock_fd, (char *) &len, sizeof(len));
+				if (read_bytes < 0)
 					raise_error("read() failed on socket");
 
-				stat = read(fd, buff, ntohs(len));
-				if (stat < 0)
+				/* Now read the packet */
+				read_bytes = read(sock_fd, buff, ntohs(len));
+				if (read_bytes < 0)
 					raise_error("read() failed on socket");
 			}
 
-			if (in.verbose == 1)
-				printf("Read %d bytes on socket\n",stat);
-
-			pthread_mutex_lock(&n2t->mutex);
-			
-			if (! push(n2t, buff, stat))
-				raise_error("push() failed in tun to network queue");
+			/* Write what we read from socket onto the tun device */
+			wrote_bytes = write(tun_fd, buff, read_bytes);
+			if (wrote_bytes < read_bytes)
+				raise_error("write() failed on tun");
 
 			if (in.verbose == 1)
-				printf("n2t has %d packets\n",n2t->num_ele);
+				printf("Read %d bytes on socket and wrote %d on tun\n",read_bytes, wrote_bytes);
 
-			pthread_mutex_unlock(&n2t->mutex);
-			buff = NULL;
-
-		}
-
-
-
-		/* Write all the data on socket that needs to be written */
-		while (t2n->is_empty != 1) {
-
-			pthread_mutex_lock(&t2n->mutex);
-
-			struct node * n;
-			n = pop(t2n);
-			if (in.verbose == 1)
-				printf("t2n has %d more packets\n",t2n->num_ele);
-
-			pthread_mutex_unlock(&t2n->mutex);
-
-			if (in.over == SOCK_DGRAM) {
-
-				if (in.mode == 'c')
-					stat = sendto(fd, n->packet, n->packet_len, 0, in.serv_ptr->ai_addr, in.serv_ptr->ai_addrlen);
-				else if (in.mode == 's')
-					stat = sendto(fd, n->packet, n->packet_len, 0, (struct sockaddr *) &peer_addr, peer_addr_len);
-				else
-					raise_error("invalid mode");
-
-				if (stat < n->packet_len)
-					raise_error("sendto() - incomplete send");
-			} else {
-
-				len = htons(n->packet_len);
-				stat = write(fd, &len, sizeof(len));
-				if (stat < 0)
-					raise_error("write() failed on socket");
-
-				stat = write(fd, n->packet, n->packet_len);
-				if (stat < 0)
-					raise_error("write() failed on socket");
-			}
-
-
-			if (in.verbose == 1) 
-				printf("wrote %d bytes on socket\n",stat);
-
-			free(n->packet);
-			free(n);
 		}
 	}
 }
@@ -502,93 +461,85 @@ void * sock_io (void * ptr) {
 
 
 
+/*
+	tun_to_sock: This function is ran in a thread which checks if the tun device is ready
+				 to be read and if it is, reads the data from tun and writes it 
+				 immidiately on the socket 
+	
+	input: void * <pointer to the thread arguments structure>
+	returns: void * (just syntactically. It will never return as it has an infinite loop)
+*/
 
-void * tun_io (void * ptr) {
+
+void * tun_to_sock (void * ptr) {
 
 	struct thread_args * args;
 	args = (struct thread_args *) ptr;
 
-	int fd;
-	struct queue * n2t, * t2n;
-	char * buff;
-	int stat = 0;
-
-	fd = args->fd;
-	n2t = args->n2t_queue;
-	t2n = args->t2n_queue;
-
-	struct timeval timeout;
-	timeout.tv_sec = 0;
-	timeout.tv_usec = 10000;
+	/* Extract the arguments from structure */
+	int tun_fd = args->tun_fd;
+	int sock_fd = args->sock_fd;
+	char buff[BUFF_SIZE];
+	int stat, read_bytes, wrote_bytes;
+	int len = 0;
 
 	fd_set r_set;
 
 	printf("Thread %ld: Starting operations on tun\n",pthread_self());
 	while (1) {
 		
-		/* First write all the data on tun that needs to be written */
-
-		while (n2t->is_empty != 1) {
-
-			pthread_mutex_lock(&n2t->mutex);
-
-			struct node * n;
-			n = pop(n2t);
-			if (in.verbose == 1)
-				printf("n2t has %d more packets\n",n2t->num_ele);
-
-			pthread_mutex_unlock(&n2t->mutex);
-
-			stat = write(fd, n->packet, n->packet_len);
-			if (stat < 0)
-				raise_error("tun_io - write() failed");
-
-			if (in.verbose == 1)
-				printf("Wrote %d bytes on tun device\n",stat);
-
-			free(n->packet);
-			free(n);
-		}
-
-
-
-		/* Do pending operations from tun device to outgoing queue */
+		/* Wait till tun device is ready to be read, if it is, read the data
+		into a buffer */
 		FD_ZERO(&r_set);
-		FD_SET(fd, &r_set);
-		stat = select(fd+1, &r_set, NULL, NULL, &timeout);
-		if (stat < 0 && errno == EINTR);
+		FD_SET(tun_fd, &r_set);
+		stat = select(tun_fd+1, &r_set, NULL, NULL, NULL);
+
+		if (stat < 0 && errno == EINTR)
+			continue;
 
 		if (stat < 0)
 			raise_error("select() failed");
 
 
-		if (FD_ISSET(fd, &r_set)) {
+		if (FD_ISSET(tun_fd, &r_set)) {
 
-
+			/* If the tun is ready to be read, read the data in a buffer */
+			wrote_bytes = 0;
 			stat = 0;
-			buff = (char *) malloc (BUFF_SIZE);
-			if (buff == NULL)
-				raise_error("malloc() failed");
+			read_bytes = 0;
 
 			bzero(buff, BUFF_SIZE);
-			stat = read(fd, buff, BUFF_SIZE);
-			if (stat < 0)
+
+			read_bytes = read(tun_fd, buff, BUFF_SIZE);
+			if (read_bytes < 0)
 				raise_error("tun_io - read() failed");
 
+			if (in.over == SOCK_DGRAM) {
+				/* In case of UDP, we need to use sendto() call */
+				if (in.mode == 'c')
+					/* UDP client already knows server address */
+					wrote_bytes = sendto(sock_fd, buff, read_bytes, 0, in.serv_ptr->ai_addr, in.serv_ptr->ai_addrlen);
+				else if (in.mode == 's')
+					/* UDP server has to use the address in the structure peer_addr. This must be populated
+					by the recvfrom() call (hopefully) */
+					wrote_bytes = sendto(sock_fd, buff, read_bytes, 0, (struct sockaddr *) &in.peer_addr, in.peer_addr_len);
+				else
+					raise_error("invalid mode");
+
+			} else {
+
+				/* In case of TCP, we first write the length of the packet on the socket and then 
+				write the actual packet. This will help the receiver to find out packet boundries
+				which is otherwise difficult as TCP makes the data appear as a stream */
+				len = htons(read_bytes);
+				wrote_bytes = write(sock_fd, &len, sizeof(len));
+			}
+
+			if (wrote_bytes < read_bytes)
+				raise_error("write on socket failed");
+
 			if (in.verbose == 1)
-				printf("Read %d bytes on tun device\n",stat);
-
-			pthread_mutex_lock(&t2n->mutex);
-			
-			if (! push(t2n, buff, stat))
-				raise_error("push() failed in tun to network queue");
-
-			if (in.verbose == 1)
-				printf("t2n has %d more packets\n",t2n->num_ele);
-
-			pthread_mutex_unlock(&t2n->mutex);
-
-			buff = NULL;
+				printf("Read %d bytes on tun and wrote %d on scoket\n", read_bytes, wrote_bytes);
 		}
 	}
 }
@@ -640,18 +591,27 @@ void check_usage (int argc, char *argv[] ) {
 	while ((arg = getopt(argc, argv, "evhm:s:d:p:o:u:")) != -1) {
 
 		switch (arg) {
+			/* help */
 			case 'h':	print_usage();
 						break;
 
+			/* persistence flag */
 			case 'e':	in.dev.pers = 1;
 						break;
 
+			/* user name to be set as owner */
 			case 'u':	strcpy(in.usr.uname, optarg);
 						break;	
 
+			/* verbosity flag */
 			case 'v':	in.verbose = 1;
 						break;
 
+			/* Mode. This can be either of the three:
+				'm': 'm'ake the device and set persistence and owner. This 
+					 is not a tunnelling mode.
+				'c': 'c'lient. Tunnelling mode client who initiates the communication
+				's': 's'erver. Tunnelling mode server who waits for the communication */
 			case 'm':	if (strcmp(optarg,"s") == 0)
 							in.mode = 's';
 						else if (strcmp(optarg,"c") == 0)
@@ -664,16 +624,20 @@ void check_usage (int argc, char *argv[] ) {
 						}
 						break;
 
+			/* server name or ip. To be given in client tunnelling mode */
 			case 's':	strcpy(in.serv,optarg);
 						break;
 
+			/* tun device name */
 			case 'd':	strcpy(in.dev.device,optarg);
 						break;
 
+			/* port number used by server and client */
 			case 'p':	strcpy(in.port_str,optarg);
 						in.port = atoi(in.port_str);
 						break;
-
+			
+			/* the transport layer protocol in tunnel over which communication happens */
 			case 'o':	if (strcmp(optarg,"tcp") == 0)
 							in.over = SOCK_STREAM;
 						else if (strcmp(optarg,"udp") == 0)
@@ -696,11 +660,13 @@ void check_usage (int argc, char *argv[] ) {
 	}
 
 
+	/* Check if mode is correct */
 	if (in.mode != 'c' && in.mode != 's' && in.mode != 'm') {
 		fprintf(stderr,"Operation mode is mandetory argument. use -m to specify the mode\n");
 		exit(1);
 	}
 
+	/* All the modes need a device name */
 	if (in.dev.device[0] == 0)
 		raise_error("Device name is mandetory argument. use -d to specify. Use -h for help");
 
@@ -934,89 +900,3 @@ int server_connect () {
 
 
 
-
-
-
-
-
-/* ---------------------------------------------------------------------
-		QUEUE FUNCTIONS
-	probably should separate these in different file
---------------------------------------------------------------------- */
-
-
-struct queue * new_queue () {
-
-	struct queue * q;
-	q = (struct queue *) malloc (sizeof(struct queue));
-
-	if (q == NULL)
-		return NULL;
-	
-
-	q->head = NULL;
-	q->tail = NULL;
-	q->is_empty = 1;
-	pthread_mutex_init(&q->mutex, NULL);
-	q->num_ele = 0;
-
-	return q;
-}
-
-
-
-
-
-
-
-int push (struct queue * q, char * buff, int len) {
-
-	struct node * n;
-	n = (struct node *) malloc (sizeof(struct node));
-
-	if (n == NULL)
-		return 0;
-	
-//	bzero(n->packet, BUFF_SIZE);
-//	bcopy(buff, n->packet, BUFF_SIZE);
-	n->packet = buff;
-	n->packet_len = len;
-	n->next = NULL;
-
-	if (q->is_empty) {
-		
-		q->head = n;
-		q->tail = n;
-		q->is_empty = 0;
-
-	} else {
-	
-		q->tail->next = n;
-		q->tail = n;
-	}
-
-	q->num_ele++;
-
-	return 1;
-}
-
-
-
-struct node * pop (struct queue * q) {
-
-	if (q->is_empty)
-		return NULL;
-	
-	struct node * n;
-	n = q->head;
-
-	q->head = q->head->next;
-
-	if (q->head == NULL) {
-		q->tail = NULL;
-		q->is_empty = 1;
-	}
-	q->num_ele--;
-
-	return n;
-}
