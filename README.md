@@ -4,6 +4,7 @@ Simpletun
 This is a simple tunnelling program written to test tunnelling of IPv4 and IPv6 over IPv4. It can use TCP or UDP as underlying protocol over which tunnelling happens.
 It can also create a persistent tun device and set its owner.
 
+The program uses multithreading (pthread) to read and write between two devices (tun and network).
 Although the code is written by me, I have referred to and am influenced by article and code snippets on http://backreference.org/2010/03/26/tuntap-interface-tutorial/ 
 
 
@@ -85,3 +86,13 @@ Usage of the program is as follows:
 								  only significant in case mode is 'm'
 				-v: verbose		: print the info messages which may slow down the performance
 				-h:	help		: print this usage
+
+Changelog
+---------
+
+1. Simple single threaded program
+2. Addition of verbosity flag to avoid printing debug messages (perf issue)
+3. Added functionality to create persistent tun device and set owner removing the need to tool like openvpn to do the same
+4. Multi-threading to handle read/writes between the devices faster
+5. Added logic to avoid copying buffer between two threads
+6. Changed threading architecture to avoid using queues between two threads (perf issue).
