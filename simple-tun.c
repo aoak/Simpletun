@@ -44,18 +44,21 @@ char prog_name[20];
 
 
 
+/* Structure to store the user info. Needed when we want
+to create a tun device and set its owner */
 struct user {
-	char uname[BUFF_SIZE];
-	struct passwd uinfo;
+	char uname[BUFF_SIZE];					/* User (owner) name. */
+	struct passwd uinfo;					/* structure populated by /etc/passwd */
 };
 
-
+/* Structure for storing the tun device info */
 struct tun_dev {
-	char device[BUFF_SIZE];
-	int pers;
-	char ip_addr[60];
+	char device[BUFF_SIZE];					/* Device name eg. tun2 */
+	int pers;								/* persistence. can be 1 or 0 */
+	char ip_addr[60];						/* ip address. For future use */
 };
 
+/* Global structure storing the commandline input */
 struct input {
 	int port;								/* Port number to be used for connection */
 	int over;								/* Underlying type of connection SOCK_DGRAM/SOCK_STREAM */
@@ -68,26 +71,27 @@ struct input {
 	struct user usr;
 } in;
 
-
+/* Packet node in the queue. */
 struct node {
 	struct node * next;
-	char packet[BUFF_SIZE];
+	char * packet;
 	int packet_len;
 };
 
-
+/* Queue structure */
 struct queue {
 	struct node * head;
 	struct node * tail;
-	int is_empty;
-	int num_ele;
-	pthread_mutex_t mutex;
+	int is_empty;							/* is queue empty? can be 1 (true) or 0 */
+	int num_ele;							/* Number of elements in the queue. */
+	pthread_mutex_t mutex;					/* Mutex for synchronized access to the queue */
 };
 
-
+/* Thread function can have only void* input. Hence arguments to the thread function
+are kept in a structure and the pointer is passed */
 struct thread_args {
-	int fd;
-	struct queue * n2t_queue, * t2n_queue;
+	int fd;									/* Device file descriptor */
+	struct queue * n2t_queue, * t2n_queue;	/* Two queues */
 };
 
 
@@ -368,7 +372,7 @@ void * sock_io (void * ptr) {
 
 	int fd;
 	struct queue * n2t, * t2n;
-	char buff[BUFF_SIZE];
+	char * buff;
 	int stat = 0;
 	int len;
 
@@ -402,6 +406,10 @@ void * sock_io (void * ptr) {
 
 			stat = 0;
 			len = 0;
+			buff = (char *) malloc (BUFF_SIZE * sizeof(char));
+			if (buff == NULL)
+				raise_error("malloc() failed");
+
 			bzero(buff, BUFF_SIZE);
 
 			if (in.over == SOCK_DGRAM) {
@@ -440,7 +448,7 @@ void * sock_io (void * ptr) {
 				printf("n2t has %d packets\n",n2t->num_ele);
 
 			pthread_mutex_unlock(&n2t->mutex);
-
+			buff = NULL;
 
 		}
 
@@ -484,6 +492,8 @@ void * sock_io (void * ptr) {
 
 			if (in.verbose == 1) 
 				printf("wrote %d bytes on socket\n",stat);
+
+			free(n->packet);
 			free(n);
 		}
 	}
@@ -500,7 +510,7 @@ void * tun_io (void * ptr) {
 
 	int fd;
 	struct queue * n2t, * t2n;
-	char buff[BUFF_SIZE];
+	char * buff;
 	int stat = 0;
 
 	fd = args->fd;
@@ -536,6 +546,7 @@ void * tun_io (void * ptr) {
 			if (in.verbose == 1)
 				printf("Wrote %d bytes on tun device\n",stat);
 
+			free(n->packet);
 			free(n);
 		}
 
@@ -555,6 +566,10 @@ void * tun_io (void * ptr) {
 
 
 			stat = 0;
+			buff = (char *) malloc (BUFF_SIZE);
+			if (buff == NULL)
+				raise_error("malloc() failed");
+
 			bzero(buff, BUFF_SIZE);
 			stat = read(fd, buff, BUFF_SIZE);
 			if (stat < 0)
@@ -573,6 +588,7 @@ void * tun_io (void * ptr) {
 
 			pthread_mutex_unlock(&t2n->mutex);
 
+			buff = NULL;
 		}
 	}
 }
@@ -864,6 +880,7 @@ int server_connect () {
 	struct addrinfo me, * myptr, * m;
 	int ret, servsock, sock;
 
+	/* prepare for getaddrinfo() */
 	memset(&me, 0, sizeof(me));
 	me.ai_family = AF_INET;
 	me.ai_socktype = in.over;
@@ -882,6 +899,7 @@ int server_connect () {
 	if (ret != 0)
 		raise_error("getaddrinfo()");
 	
+	/* Now try to create a socket and bind to it. */
 	for (m = myptr; m != NULL; m = m->ai_next) {
 		servsock = socket(m->ai_family, m->ai_socktype, m->ai_protocol);
 
@@ -894,18 +912,22 @@ int server_connect () {
 		close(servsock);
 	}
 
+	/* if m is NULL, that means we broke out of for loop because we exausted
+	the linked list and not because bind() succeeded. Exit in hhat case */
 	if (m == NULL)
 		raise_error("bind()");
 
+	/* If its not UDP, we have to do listen() and accept() */
 	if (in.over != SOCK_DGRAM) {
 		listen(servsock, 5);
 		sock = accept(servsock, NULL, NULL);
 		if (sock < 0)
 			raise_error("accept()");
-	
+		/* In case of TCP, return descriptor of socket after accept() */	
 		return sock;
 
 	} else {
+		/* In case of UDP, the socket we did bind() with is the one */
 		return servsock;
 	}
 }
@@ -955,8 +977,9 @@ int push (struct queue * q, char * buff, int len) {
 	if (n == NULL)
 		return 0;
 	
-	bzero(n->packet, BUFF_SIZE);
-	bcopy(buff, n->packet, BUFF_SIZE);
+//	bzero(n->packet, BUFF_SIZE);
+//	bcopy(buff, n->packet, BUFF_SIZE);
+	n->packet = buff;
 	n->packet_len = len;
 	n->next = NULL;
 
