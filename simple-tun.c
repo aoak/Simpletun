@@ -13,11 +13,11 @@
 #include <netdb.h>
 #include <pwd.h>
 #include <pthread.h>
+#include <arpa/inet.h>
 
 
 
-/* This is sucky because I don't know the cause of it, but include has to be done
-in order -
+/* I don't know the cause of it, but include has to be done in order -
 
 	#include <sys/types.h>
 	#include <sys/socket.h>
@@ -33,6 +33,7 @@ otherwise, I get error while compilation which is-
 	/usr/include/linux/if.h:188:20: error: field ‘ifru_hwaddr’ has incomplete type
 
 Probably some conflicts need to be avoided which is done by including sys/sockets.h first
+This sucks, but we can live with it ;)
 */
 
 
@@ -99,6 +100,7 @@ int server_connect ();
 int client_connect ();
 void * tun_to_sock (void * );
 void * sock_to_tun (void * );
+void setip (int fd); 
 
 
 
@@ -258,6 +260,7 @@ void settun (int tun_fd, struct ifreq * ifr, int pers) {
 
 	}
 
+	setip(tun_fd);
 	
 	printf("tun device: %s,",ifr->ifr_name);
 	if (owner != -1)
@@ -267,9 +270,74 @@ void settun (int tun_fd, struct ifreq * ifr, int pers) {
 	printf(" persistence: %d\n", pers);
 
 	free(buff);
-	return 0;
 }
 
+
+
+
+
+
+void setip (int fd) {
+
+	struct ifreq ifr;
+	struct sockaddr_in addr;
+	int stat, s;
+
+	memset(&ifr, 0, sizeof(ifr));
+	memset(&addr, 0, sizeof(addr));
+	strncpy(ifr.ifr_name, in.dev.device, IFNAMSIZ);
+
+	/* Need logic to set family dynamically taking commandline arg */
+	addr.sin_family = AF_INET;
+
+	/* we need a socket descriptor for ioctl(). Cant use tun descriptor */
+	s = socket(addr.sin_family, SOCK_DGRAM, 0);
+
+	/* Convert ip to network binary */
+	stat = inet_pton(addr.sin_family, in.dev.ip_addr, &addr.sin_addr);
+	if (stat == 0)
+		raise_error("inet_pton() - invalid ip");
+	if (stat == -1)
+		raise_error("inet_pton() - invalid family");
+
+	if (stat != 1)
+		raise_error("inet_pton()");
+	
+	ifr.ifr_addr = *(struct sockaddr *) &addr;
+
+	/* Set ip */
+	if (ioctl(s, SIOCSIFADDR, (caddr_t) &ifr) == -1)
+		raise_error("ioctl() - SIOCSIFADDR");
+
+	/* Convert mask to net binary. Need logic here to adjust it dynamically
+	too */
+	stat = inet_pton(addr.sin_family, "255.255.0.0", &addr.sin_addr);
+	if (stat == 0)
+		raise_error("inet_pton() - invalid ip");
+	if (stat == -1)
+		raise_error("inet_pton() - invalid family");
+
+	if (stat != 1)
+		raise_error("inet_pton()");
+	
+	ifr.ifr_addr = *(struct sockaddr *) &addr;
+
+	/* Set the mask */
+	if (ioctl(s, SIOCSIFNETMASK, (caddr_t) &ifr) == -1)
+		raise_error("ioctl() - SIOCSIFADDR");
+	
+	/* Get the current flags */
+	if (ioctl(s, SIOCGIFFLAGS, &ifr) == -1)
+		raise_error("ioctl() - SIOCGIFFLAGS");
+	strncpy(ifr.ifr_name, in.dev.device, IFNAMSIZ);
+	/* Or them with UP and RUNNING flags */
+	ifr.ifr_flags |= (IFF_UP | IFF_RUNNING);
+
+	/* Set the flags */
+	if (ioctl(s, SIOCSIFFLAGS, &ifr) == -1)
+		raise_error("ioctl() - SIOCSIFFLAGS");
+
+}
 
 
 
@@ -588,7 +656,7 @@ void check_usage (int argc, char *argv[] ) {
 	in.dev.pers = 0;
 	
 
-	while ((arg = getopt(argc, argv, "evhm:s:d:p:o:u:")) != -1) {
+	while ((arg = getopt(argc, argv, "evhm:s:d:p:o:u:i:")) != -1) {
 
 		switch (arg) {
 			/* help */
@@ -605,6 +673,9 @@ void check_usage (int argc, char *argv[] ) {
 
 			/* verbosity flag */
 			case 'v':	in.verbose = 1;
+						break;
+
+			case 'i':	strcpy(in.dev.ip_addr, optarg);
 						break;
 
 			/* Mode. This can be either of the three:
