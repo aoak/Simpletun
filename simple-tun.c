@@ -1,3 +1,23 @@
+/*
+simple-tun.c
+
+Author: Aniket Oak
+Created: 21-Jun-2013
+Last modified: 01-Aug-2013
+
+The purpose of this program is to create a tun device and set up a tunnel over a network using ip 
+vesion 4 and use it to tunnel the packets between two tun devices keeping the program using the 
+tun device completely oblivious of the fact that such a tunnel exists. 
+The packets tunneled over the network can be ip version 4 or version 6.
+
+code can be found at: https://github.com/aoak/Simpletun
+
+For detailed info, check the README file in above repo.
+*/
+
+
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -41,7 +61,8 @@ This sucks, but we can live with it ;)
 #define IP_MAX_LEN 60
 
 
-char prog_name[20];
+char prog_name[20] = "simple-tun";
+char version[10] = "v2.1";
 
 
 
@@ -116,7 +137,6 @@ void main (int argc, char * argv[]) {
 	int nfd, tfd;
 	struct ifreq ifr;		/* structure having parameters for ioctl() call */
 
-	strcpy(prog_name, argv[0]);
 	in.verbose = 0;
 	check_usage(argc,argv);
 
@@ -928,7 +948,8 @@ void check_usage (int argc, char *argv[] ) {
 
 void print_usage () {
 	
-	printf("Usage: %s -m [mode] -d [device name] -p [port] -o [underlying prot] -s [server] -v \n\
+	printf("\t%s - %s\n\n\
+	Usage: %s -m [mode] -d [device name] -p [port] -o [underlying prot] -s [server] -v \n\
 	            -m [mode] -d [device name] -e -u [user]\n\
 	where,\n\
 		-m: mode        : either of 's' or 'c' signifying whether to act as client or server while tunnelling,\n\
@@ -945,8 +966,10 @@ void print_usage () {
 		                  only significant in case mode is 'm'\n\
 		-u: user        : User to set as owner of the device\n\
 		                  only significant in case mode is 'm'\n\
+		-i: ip address  : Dotted decimal ipv4 address with possibly mask in CDIR notation to be set as address\n\
+		                  and mask of tun device. only significant in case mode is 'm'\n\
 		-v: verbose     : print the info messages which may slow down the performance\n\
-		-h: help        : print this usage\n", prog_name);
+		-h: help        : print this usage\n", prog_name, version, prog_name);
 	
 	exit(0);
 }
