@@ -38,7 +38,7 @@ This sucks, but we can live with it ;)
 
 
 #define BUFF_SIZE 3000
-
+#define IP_MAX_LEN 60
 
 
 char prog_name[20];
@@ -56,7 +56,8 @@ struct user {
 struct tun_dev {
 	char device[BUFF_SIZE];					/* Device name eg. tun2 */
 	int pers;								/* persistence. can be 1 or 0 */
-	char ip_addr[60];						/* ip address. For future use */
+	char ip_addr[IP_MAX_LEN];				/* ip address */
+	char ip_mask[IP_MAX_LEN];				/* mask */
 };
 
 /* Global structure storing the commandline input */
@@ -100,7 +101,9 @@ int server_connect ();
 int client_connect ();
 void * tun_to_sock (void * );
 void * sock_to_tun (void * );
-void setip (int fd); 
+void setip (); 
+void process_ip (char * , char * , char * );
+int itoa (unsigned char , char * );
 
 
 
@@ -275,13 +278,27 @@ void settun (int tun_fd, struct ifreq * ifr, int pers) {
 
 
 
+/*
+	setip:  This function sets the ip address to the given tun device, sets
+			a mask, and marks the link as 'up' and 'running'. This function
+			essentially eliminates need to fire external 'ip' command.
+	
+	input: none
+
+	returns: void
+*/
 
 
-void setip (int fd) {
+void setip () {
 
 	struct ifreq ifr;
 	struct sockaddr_in addr;
 	int stat, s;
+
+	char ipad[IP_MAX_LEN];
+
+	process_ip(in.dev.ip_addr, ipad, in.dev.ip_mask);
+	strcpy(in.dev.ip_addr, ipad);
 
 	memset(&ifr, 0, sizeof(ifr));
 	memset(&addr, 0, sizeof(addr));
@@ -309,22 +326,26 @@ void setip (int fd) {
 	if (ioctl(s, SIOCSIFADDR, (caddr_t) &ifr) == -1)
 		raise_error("ioctl() - SIOCSIFADDR");
 
-	/* Convert mask to net binary. Need logic here to adjust it dynamically
-	too */
-	stat = inet_pton(addr.sin_family, "255.255.0.0", &addr.sin_addr);
-	if (stat == 0)
-		raise_error("inet_pton() - invalid ip");
-	if (stat == -1)
-		raise_error("inet_pton() - invalid family");
+	/* If a mask was generated for us, then set it */
+	if (in.dev.ip_mask[0] != 0) {
 
-	if (stat != 1)
-		raise_error("inet_pton()");
+		/* Convert mask to net binary. Need logic here to adjust it dynamically
+		too */
+		stat = inet_pton(addr.sin_family, in.dev.ip_mask, &addr.sin_addr);
+		if (stat == 0)
+			raise_error("inet_pton() - invalid ip");
+		if (stat == -1)
+			raise_error("inet_pton() - invalid family");
+
+		if (stat != 1)
+			raise_error("inet_pton()");
 	
-	ifr.ifr_addr = *(struct sockaddr *) &addr;
+		ifr.ifr_addr = *(struct sockaddr *) &addr;
 
-	/* Set the mask */
-	if (ioctl(s, SIOCSIFNETMASK, (caddr_t) &ifr) == -1)
-		raise_error("ioctl() - SIOCSIFADDR");
+		/* Set the mask */
+		if (ioctl(s, SIOCSIFNETMASK, (caddr_t) &ifr) == -1)
+			raise_error("ioctl() - SIOCSIFADDR");
+	}
 	
 	/* Get the current flags */
 	if (ioctl(s, SIOCGIFFLAGS, &ifr) == -1)
@@ -338,6 +359,136 @@ void setip (int fd) {
 		raise_error("ioctl() - SIOCSIFFLAGS");
 
 }
+
+
+
+
+/*
+	process_ip: This function takes an ip address and possibly a mask given in CDIR notation
+				and splits it into two strings containing an ip address and a mask in netmask 
+				notation. If the no mask is included, it zeroes the mask buffer which then
+				can be checked by caller to see if a mask was generated
+	
+	input:  char * <ip and mask in CDIR notation>
+			char * <buffer for ip address string>
+			char * <buffer for mask string>
+	
+	returns: void
+*/
+
+
+void process_ip (char * in_ip, char * ip, char * mask) {
+
+	int i;
+	bzero(ip, IP_MAX_LEN);
+	bzero(mask, IP_MAX_LEN);
+
+	/* Assume that ip address is either just an ip address or ip
+	address appended with slash number notation specifying the mask
+	For example, it can be 100.100.0.1 or 100.100.0.1/24 */
+
+	for (i=0; i < IP_MAX_LEN; i++) {
+
+		/* Use '/' as character ending the ip part. If there is no /XX
+		in input, then the string will end with a null character which 
+		will break this loop anyway */
+		ip[i] = (in_ip[i] == '/') ? '\0' : in_ip[i];	
+		if ( ip[i] == '\0')
+			break;
+	}
+
+	if (in.verbose == 1)
+		printf("Given ip is %s\n",ip);
+
+	/* If we are not given a mask, don't do anything */
+	if (in_ip[i] != '/')
+		return;
+	
+
+	int mask_bits;
+	mask_bits = atoi(&in_ip[++i]);
+
+	if (in.verbose == 1)
+		printf("Given %d mask bits\n",mask_bits);
+	
+	int j = 0;
+	int total_parts = 0;				/* parts in ip string separated by '.' */
+	unsigned char mask_part = (~0);		/* set mask as all ones (255) */
+
+	i = mask_bits;
+
+	/* We have to parse the ip till the time there are 4 sections (assume ipv4) */
+	while (total_parts < 4) {
+		
+		if ( (i/8) > 0 ) {
+
+			/* If mask bits are more than 8, that means we need 255 as mask */
+			j += itoa(mask_part, &mask[j]);
+			total_parts++;
+			i -= 8;
+
+		} else if ( (i%8) > 0) {
+
+			/* If more mask bits remain, we need to prepare the mask by shifting
+			255 left by (8-mask_bits) times */
+			mask_part <<= (8-i);
+			j += itoa(mask_part, &mask[j]);
+			total_parts++;
+			i = 0;
+
+		} else {
+
+			/* This case means we have created the mask string like 255.192, 
+			but its not valid yet. We need to append it with zeros to make 
+			something like 255.192.0.0 */
+			j += itoa(0,&mask[j]);
+			total_parts++;
+		}
+
+		/* Separate the parts with '.' and end ip string with null character */
+		mask[j++] = (total_parts < 4) ? '.' : '\0';
+	}
+
+	if (in.verbose == 1)
+		printf("Prepared mask is %s\n",mask);
+}
+
+
+
+/*
+	itoa: This function takes a positive integer and converts it to a string.
+		  In this program, it assumes input to be unsigned integer because the
+		  calling functions will be doing some bitwise operations and we dont
+		  want to mess around with signed representation.
+
+	input:  unsigned char <integer to convert>
+			char * <buffer to hold converted string assumed to be large enough>
+	
+	returns: int <The length of converted string>
+*/
+
+
+int itoa (unsigned char a, char * i) {
+
+	/* First we need to find out the length of the string to be. This has to
+	be recursive */
+
+	int d = 10;
+	int len;
+
+	for (len = 0; a/d > 0; len++, d *= 10);
+
+	i[len+1] = '\0';
+
+	for (d = len; d >= 0; d--) {
+		i[d] = '0' + (a % 10);
+		a /= 10;
+	}
+
+	return len+1;
+}
+
+
 
 
 
