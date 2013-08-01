@@ -53,39 +53,43 @@ snippet how it can be used.
 
 For creation of the tun device, the same program can be used as follows:
 
-	$ sudo ./simple-tun -m m -e -d tun5 -u aniket
+	$ sudo ./simple-tun -m m -e -d tun5 -u aniket -i 100.100.0.1/24
 	Created tun device(3): tun5
 	tun device: tun5, uid: 1000, gid: 1000, persistence: 1
 
 This will create a tun device which can be then used for tunnelling.
-Note that for this version, a tun device ip address needs to be setup using following commands. 
+Note that for this version, a tun device ipv6 address needs to be setup using following commands. 
 
 	# ip link set
 	# ip addr add
 
-The program cannot add and set ip addresses for you (yet).
+The program cannot add and set ipv6 addresses for you (yet).
 
 Usage of the program is as follows:
 
-	Usage: ./simple-tun -m [mode] -d [device name] -p [port] -o [underlying prot] -s [server] -v 
-						-m [mode] -d [device name] -e -u [user]
-			where,
-				-m:	mode		: either of 's' or 'c' signifying whether to act as client or server while tunnelling,
-									OR
-								  can be 'm' which tells the program that it is supposed to create new tun device.
-				-d:	device name	: tun device name
-				-p:	port		: port number used by client and server for tunnelling (for listening in case of server).
-								  only significant in case mode isn't 'm'
-				-o:	protocol	: name of the underlying protocol over which tunneling happens. can be 'tcp' or 'udp'
-								  only significant in case mode isn't 'm'
-				-s:	server name	: name or ip address of the server. (Only considered in case of client)
-								  only significant in case mode isn't 'm'
-				-e: persistence : Whether to set device persistent or not
-								  only significant in case mode is 'm'
-				-u: user		: User to set as owner of the device
-								  only significant in case mode is 'm'
-				-v: verbose		: print the info messages which may slow down the performance
-				-h:	help		: print this usage
+	simple-tun - v2.1
+
+	Usage: simple-tun -m [mode] -d [device name] -p [port] -o [underlying prot] -s [server] -v 
+					  -m [mode] -d [device name] -e -u [user]
+	where,
+		-m: mode        : either of 's' or 'c' signifying whether to act as client or server while tunnelling,
+							OR
+						  can be 'm' which tells the program that it is supposed to create new tun device.
+		-d: device name : tun device name
+		-p: port        : port number used by client and server for tunnelling (for listening in case of server).
+						  only significant in case mode isn't 'm'
+		-o: protocol    : name of the underlying protocol over which tunneling happens. can be 'tcp' or 'udp'
+						  only significant in case mode isn't 'm'
+		-s: server name : name or ip address of the server. (Only considered in case of client)
+						  only significant in case mode isn't 'm'
+		-e: persistence : Whether to set device persistent or not
+						  only significant in case mode is 'm'
+		-u: user        : User to set as owner of the device
+						  only significant in case mode is 'm'
+		-i: ip address  : Dotted decimal ipv4 address with possibly mask in CDIR notation to be set as address
+						  and mask of tun device. only significant in case mode is 'm'
+		-v: verbose     : print the info messages which may slow down the performance
+		-h: help        : print this usage
 
 Changelog
 ---------
@@ -96,3 +100,4 @@ Changelog
 4. Multi-threading to handle read/writes between the devices faster
 5. Added logic to avoid copying buffer between two threads
 6. Changed threading architecture to avoid using queues between two threads (perf issue).
+7. Added support to add ipv4 address and mask and set the link up and running.
