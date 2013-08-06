@@ -80,6 +80,8 @@ Usage of the program is as follows:
 						  only significant in case mode isn't 'm'
 		-o: protocol    : name of the underlying protocol over which tunneling happens. can be 'tcp' or 'udp'
 						  only significant in case mode isn't 'm'
+		-t: ip version	: version of ip protocol to be used in tunnel. Can be 'ipv4' or 'ipv6'
+						  only significant in case mode isn't 'm'
 		-s: server name : name or ip address of the server. (Only considered in case of client)
 						  only significant in case mode isn't 'm'
 		-e: persistence : Whether to set device persistent or not
