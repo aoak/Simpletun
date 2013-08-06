@@ -62,7 +62,7 @@ This sucks, but we can live with it ;)
 
 
 char prog_name[20] = "simple-tun";
-char version[10] = "v2.1";
+char version[10] = "v2.2";
 
 
 
@@ -84,7 +84,8 @@ struct tun_dev {
 /* Global structure storing the commandline input */
 struct input {
 	int port;								/* Port number to be used for connection */
-	int over;								/* Underlying type of connection SOCK_DGRAM/SOCK_STREAM */
+	int over_t;								/* Underlying type of connection SOCK_DGRAM/SOCK_STREAM */
+	int over_n;								/* Unverlying network protocol AF_INET/AF_INET6 */
 	int verbose;							/* verbose tunneling flag */
 	struct tun_dev dev;
 	char serv[BUFF_SIZE];					/* Server name or ip address (for client) */
@@ -283,7 +284,8 @@ void settun (int tun_fd, struct ifreq * ifr, int pers) {
 
 	}
 
-	setip(tun_fd);
+	if (in.dev.ip_addr[0] != 0)
+		setip(tun_fd);
 	
 	printf("tun device: %s,",ifr->ifr_name);
 	if (owner != -1)
@@ -312,7 +314,7 @@ void settun (int tun_fd, struct ifreq * ifr, int pers) {
 void setip () {
 
 	struct ifreq ifr;
-	struct sockaddr_in addr;
+	struct sockaddr_in6 addr;
 	int stat, s;
 
 	char ipad[IP_MAX_LEN];
@@ -325,14 +327,18 @@ void setip () {
 	strncpy(ifr.ifr_name, in.dev.device, IFNAMSIZ);
 
 	/* Need logic to set family dynamically taking commandline arg */
-	addr.sin_family = AF_INET;
+//	addr.sin_family = AF_INET;
+	addr.sin6_family = AF_INET6;
 
 	/* we need a socket descriptor for ioctl(). Cant use tun descriptor */
-	s = socket(addr.sin_family, SOCK_DGRAM, 0);
+	s = socket(AF_INET6, SOCK_DGRAM, 0);
+//	s = socket(addr.sin6_family, SOCK_DGRAM, 0);
+	if (s < 0)
+		raise_error("socket()");
 
 	/* Convert ip to network binary */
-	stat = inet_pton(addr.sin_family, in.dev.ip_addr, &addr.sin_addr);
-	if (stat == 0)
+	stat = inet_pton(addr.sin6_family, in.dev.ip_addr, &addr.sin6_addr);
+	if (stat == 0) 
 		raise_error("inet_pton() - invalid ip");
 	if (stat == -1)
 		raise_error("inet_pton() - invalid family");
@@ -351,7 +357,7 @@ void setip () {
 
 		/* Convert mask to net binary. Need logic here to adjust it dynamically
 		too */
-		stat = inet_pton(addr.sin_family, in.dev.ip_mask, &addr.sin_addr);
+		stat = inet_pton(addr.sin6_family, in.dev.ip_mask, &addr.sin6_addr);
 		if (stat == 0)
 			raise_error("inet_pton() - invalid ip");
 		if (stat == -1)
@@ -520,6 +526,7 @@ int itoa (unsigned char a, char * i) {
 	
 	input:  int <tun device descriptor>
 			struct ifreq * <pointer to structure ifreq which was populated during mktun().
+
 	returns: void
 */
 
@@ -653,7 +660,7 @@ void * sock_to_tun (void * ptr) {
 
 			bzero(buff, BUFF_SIZE);
 
-			if (in.over == SOCK_DGRAM) {
+			if (in.over_t == SOCK_DGRAM) {
 
 				/* In case of UDP, we need to read the data using recvfrom() call */
 				if (in.mode == 'c')
@@ -753,7 +760,7 @@ void * tun_to_sock (void * ptr) {
 			if (read_bytes < 0)
 				raise_error("tun_io - read() failed");
 
-			if (in.over == SOCK_DGRAM) {
+			if (in.over_t == SOCK_DGRAM) {
 				/* In case of UDP, we need to use sendto() call */
 				if (in.mode == 'c')
 					/* UDP client already knows server address */
@@ -822,12 +829,13 @@ void check_usage (int argc, char *argv[] ) {
 
 	bzero(in.serv, BUFF_SIZE);
 	bzero(in.dev.device, BUFF_SIZE);
-	bzero(in.dev.ip_addr, 60);
+	bzero(in.dev.ip_addr, IP_MAX_LEN);
+	bzero(in.dev.ip_mask, IP_MAX_LEN);
 	bzero(in.port_str, 10);
 	in.dev.pers = 0;
 	
 
-	while ((arg = getopt(argc, argv, "evhm:s:d:p:o:u:i:")) != -1) {
+	while ((arg = getopt(argc, argv, "evhm:s:d:p:o:u:i:t:")) != -1) {
 
 		switch (arg) {
 			/* help */
@@ -881,11 +889,22 @@ void check_usage (int argc, char *argv[] ) {
 			
 			/* the transport layer protocol in tunnel over which communication happens */
 			case 'o':	if (strcmp(optarg,"tcp") == 0)
-							in.over = SOCK_STREAM;
+							in.over_t = SOCK_STREAM;
 						else if (strcmp(optarg,"udp") == 0)
-							in.over = SOCK_DGRAM;
+							in.over_t = SOCK_DGRAM;
 						else {
 							fprintf(stderr,"Invalid underlying protocol %s. Valid args are 'tcp' or 'udp'\n",optarg);
+							exit(1);
+						}
+						break;
+
+			/* the network layer protocol in tunnel over which communication happens */
+			case 't':	if (strcmp(optarg,"ipv4") == 0)
+							in.over_n = AF_INET;
+						else if (strcmp(optarg,"ipv6") == 0)
+							in.over_n = AF_INET6;
+						else {
+							fprintf(stderr,"Invalid underlying network protocol %s. Valid args are 'ipv4' or 'ipv6'\n",optarg);
 							exit(1);
 						}
 						break;
@@ -915,7 +934,10 @@ void check_usage (int argc, char *argv[] ) {
 	/* Usage check for tunneling operations */
 	if (in.mode != 'm') {
 		if (in.port_str[0] == 0)
-		raise_error("Port number is mandetory argument in while tunnelling. use -p to specify. Use -h for help");
+			raise_error("Port number is mandetory argument in while tunnelling. use -p to specify. Use -h for help");
+
+		if (in.over_t == -10 || in.over_n == -10)
+			raise_error("Transport and network layer protocols for tunnel are mandetory arguments. Use -t and -o to specify");
 		
 		if (in.mode == 'c' && in.serv[0] == 0) 
 			raise_error("Client mode needs option -s with server name/ip as an argument");
@@ -958,10 +980,12 @@ void print_usage () {
 		-d: device name : tun device name\n\
 		-p: port        : port number used by client and server for tunnelling (for listening in case of server).\n\
 		                  only significant in case mode isn't 'm'\n\
-		-o: protocol    : name of the underlying protocol over which tunneling happens. can be 'tcp' or 'udp'\n\
+		-o: protocol    : name of the underlying transport protocol over which tunneling happens. can be 'tcp' or 'udp'\n\
+		                  only significant in case mode isn't 'm'\n\
+		-t: ip version	: version of ip protocol to be used in tunnel. Can be 'ipv4' or 'ipv6'\n\
 		                  only significant in case mode isn't 'm'\n\
 		-s: server name : name or ip address of the server. (Only considered in case of client)\n\
-		                  only significant in case mode isn't 'm'\n\
+	                      only significant in case mode isn't 'm'\n\
 		-e: persistence : Whether to set device persistent or not\n\
 		                  only significant in case mode is 'm'\n\
 		-u: user        : User to set as owner of the device\n\
@@ -1032,8 +1056,8 @@ int client_connect () {
 	memset(&in.server, 0, sizeof(in.server));
 
 	/* Fill in the server 'hint' information for getaddrinfo() */
-	in.server.ai_family = AF_INET;
-	in.server.ai_socktype = in.over;
+	in.server.ai_family = in.over_n;
+	in.server.ai_socktype = in.over_t;
 	in.server.ai_protocol = 0;
 	in.server.ai_flags = AI_CANONNAME|AI_ADDRCONFIG;
 
@@ -1048,7 +1072,7 @@ int client_connect () {
 		if (sockfd == -1)
 			continue;
 
-		if (in.over == SOCK_DGRAM) {
+		if (in.over_t == SOCK_DGRAM) {
 			/* in case of UDP, if we are here, means we have got the socket.
 			so break out of the loop now */
 			break;
@@ -1093,8 +1117,8 @@ int server_connect () {
 
 	/* prepare for getaddrinfo() */
 	memset(&me, 0, sizeof(me));
-	me.ai_family = AF_INET;
-	me.ai_socktype = in.over;
+	me.ai_family = in.over_n;
+	me.ai_socktype = in.over_t;
 	me.ai_protocol = 0;
 	me.ai_flags = AI_PASSIVE;
 	me.ai_canonname = NULL;
@@ -1129,7 +1153,7 @@ int server_connect () {
 		raise_error("bind()");
 
 	/* If its not UDP, we have to do listen() and accept() */
-	if (in.over != SOCK_DGRAM) {
+	if (in.over_t != SOCK_DGRAM) {
 		listen(servsock, 5);
 		sock = accept(servsock, NULL, NULL);
 		if (sock < 0)
