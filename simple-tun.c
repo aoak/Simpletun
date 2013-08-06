@@ -6,8 +6,8 @@ Created: 21-Jun-2013
 Last modified: 06-Aug-2013
 
 The purpose of this program is to create a tun device and set up a tunnel over a network using ip 
-vesion 4 and use it to tunnel the packets between two tun devices keeping the program using the 
-tun device completely oblivious of the fact that such a tunnel exists. 
+vesion 4 or version 6 and use it to tunnel the packets between two tun devices keeping the program 
+using the tun device completely oblivious of the fact that such a tunnel exists. 
 The packets tunneled over the network can be ip version 4 or version 6.
 
 code can be found at: https://github.com/aoak/Simpletun
