@@ -314,7 +314,7 @@ void settun (int tun_fd, struct ifreq * ifr, int pers) {
 void setip () {
 
 	struct ifreq ifr;
-	struct sockaddr_in6 addr;
+	struct sockaddr_in addr;
 	int stat, s;
 
 	char ipad[IP_MAX_LEN];
@@ -330,12 +330,12 @@ void setip () {
 	addr.sin_family = AF_INET;
 
 	/* we need a socket descriptor for ioctl(). Cant use tun descriptor */
-	s = socket(addr.sin6_family, SOCK_DGRAM, 0);
+	s = socket(addr.sin_family, SOCK_DGRAM, 0);
 	if (s < 0)
 		raise_error("socket()");
 
 	/* Convert ip to network binary */
-	stat = inet_pton(addr.sin6_family, in.dev.ip_addr, &addr.sin6_addr);
+	stat = inet_pton(addr.sin_family, in.dev.ip_addr, &addr.sin_addr);
 	if (stat == 0) 
 		raise_error("inet_pton() - invalid ip");
 	if (stat == -1)
@@ -355,7 +355,7 @@ void setip () {
 
 		/* Convert mask to net binary. Need logic here to adjust it dynamically
 		too */
-		stat = inet_pton(addr.sin6_family, in.dev.ip_mask, &addr.sin6_addr);
+		stat = inet_pton(addr.sin_family, in.dev.ip_mask, &addr.sin_addr);
 		if (stat == 0)
 			raise_error("inet_pton() - invalid ip");
 		if (stat == -1)
