@@ -327,12 +327,10 @@ void setip () {
 	strncpy(ifr.ifr_name, in.dev.device, IFNAMSIZ);
 
 	/* Need logic to set family dynamically taking commandline arg */
-//	addr.sin_family = AF_INET;
-	addr.sin6_family = AF_INET6;
+	addr.sin_family = AF_INET;
 
 	/* we need a socket descriptor for ioctl(). Cant use tun descriptor */
-	s = socket(AF_INET6, SOCK_DGRAM, 0);
-//	s = socket(addr.sin6_family, SOCK_DGRAM, 0);
+	s = socket(addr.sin6_family, SOCK_DGRAM, 0);
 	if (s < 0)
 		raise_error("socket()");
 
