@@ -1,7 +1,7 @@
 Simpletun
 =========
 
-This is a simple tunnelling program written to test tunnelling of IPv4 and IPv6 over IPv4. It can use TCP or UDP as underlying protocol over which tunnelling happens.
+This is a simple tunnelling program written to test tunnelling of IPv4 and IPv6 over IPv4 or IPv6. It can use TCP or UDP as underlying protocol over which tunnelling happens.
 It can also create a persistent tun device and set its owner.
 
 The program uses multithreading (pthread) to read and write between two devices (tun and network).
@@ -101,3 +101,4 @@ Changelog
 5. Added logic to avoid copying buffer between two threads
 6. Changed threading architecture to avoid using queues between two threads (perf issue).
 7. Added support to add ipv4 address and mask and set the link up and running.
+8. Added support for tunnelling over ipv6 network connection
