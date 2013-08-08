@@ -3,7 +3,7 @@ simple-tun.c
 
 Author: Aniket Oak
 Created: 21-Jun-2013
-Last modified: 06-Aug-2013
+Last modified: 08-Aug-2013
 
 The purpose of this program is to create a tun device and set up a tunnel over a network using ip 
 vesion 4 or version 6 and use it to tunnel the packets between two tun devices keeping the program 
@@ -62,7 +62,7 @@ This sucks, but we can live with it ;)
 
 
 char prog_name[20] = "simple-tun";
-char version[10] = "v2.2";
+char version[10] = "v2.3";
 
 
 
@@ -125,6 +125,8 @@ void * tun_to_sock (void * );
 void * sock_to_tun (void * );
 void setip (); 
 void process_ip (char * , char * , char * );
+void process_ipv4 (char * , char * , char * );
+void process_ipv6 (char * , char * , char * );
 int itoa (unsigned char , char * );
 
 
@@ -133,7 +135,7 @@ int itoa (unsigned char , char * );
 
 
 
-void main (int argc, char * argv[]) {
+int main (int argc, char * argv[]) {
 
 	int nfd, tfd;
 	struct ifreq ifr;		/* structure having parameters for ioctl() call */
@@ -161,7 +163,7 @@ void main (int argc, char * argv[]) {
 
 	tunnel(nfd, tfd);
 	//read_bytes_tun(tfd, &ifr);
-
+	return 0;
 }
 
 
@@ -314,7 +316,8 @@ void settun (int tun_fd, struct ifreq * ifr, int pers) {
 void setip () {
 
 	struct ifreq ifr;
-	struct sockaddr_in addr;
+	struct sockaddr_in addr4;
+	struct sockaddr_in6 addr6;
 	int stat, s;
 
 	char ipad[IP_MAX_LEN];
@@ -323,19 +326,35 @@ void setip () {
 	strcpy(in.dev.ip_addr, ipad);
 
 	memset(&ifr, 0, sizeof(ifr));
-	memset(&addr, 0, sizeof(addr));
 	strncpy(ifr.ifr_name, in.dev.device, IFNAMSIZ);
 
-	/* Need logic to set family dynamically taking commandline arg */
-	addr.sin_family = AF_INET;
-
 	/* we need a socket descriptor for ioctl(). Cant use tun descriptor */
-	s = socket(addr.sin_family, SOCK_DGRAM, 0);
+	s = socket(in.over_n, SOCK_DGRAM, 0);
+	/* Now check if socket we got is ok */
 	if (s < 0)
 		raise_error("socket()");
 
-	/* Convert ip to network binary */
-	stat = inet_pton(addr.sin_family, in.dev.ip_addr, &addr.sin_addr);
+
+
+	switch (in.over_n) {
+
+	case AF_INET:	memset(&addr4, 0, sizeof(addr4));
+					addr4.sin_family = AF_INET;
+					/* Convert ip to network binary */
+					stat = inet_pton(addr4.sin_family, in.dev.ip_addr, &addr4.sin_addr);
+					ifr.ifr_addr = *(struct sockaddr *) &addr4;
+					break;
+
+	case AF_INET6:	memset(&addr6, 0, sizeof(addr6));
+					addr6.sin6_family = AF_INET6;
+					/* Convert ip to network binary */
+					stat = inet_pton(addr6.sin6_family, in.dev.ip_addr, &addr6.sin6_addr);
+					ifr.ifr_addr = *(struct sockaddr *) &addr6;
+					break;
+	default:		raise_error("invalid network prot");
+	}
+
+	/* Check if conversion happened properly */
 	if (stat == 0) 
 		raise_error("inet_pton() - invalid ip");
 	if (stat == -1)
@@ -344,18 +363,33 @@ void setip () {
 	if (stat != 1)
 		raise_error("inet_pton()");
 	
-	ifr.ifr_addr = *(struct sockaddr *) &addr;
 
 	/* Set ip */
 	if (ioctl(s, SIOCSIFADDR, (caddr_t) &ifr) == -1)
 		raise_error("ioctl() - SIOCSIFADDR");
+
+
+
+
 
 	/* If a mask was generated for us, then set it */
 	if (in.dev.ip_mask[0] != 0) {
 
 		/* Convert mask to net binary. Need logic here to adjust it dynamically
 		too */
-		stat = inet_pton(addr.sin_family, in.dev.ip_mask, &addr.sin_addr);
+
+		switch (in.over_n) {
+
+		case AF_INET:	stat = inet_pton(addr4.sin_family, in.dev.ip_mask, &addr4.sin_addr);
+						ifr.ifr_addr = *(struct sockaddr *) &addr4;
+						break;
+		case AF_INET6:	stat = inet_pton(addr6.sin6_family, in.dev.ip_mask, &addr6.sin6_addr);
+						ifr.ifr_addr = *(struct sockaddr *) &addr6;
+						break;
+		default:		raise_error("invalid network prot");
+		}
+
+
 		if (stat == 0)
 			raise_error("inet_pton() - invalid ip");
 		if (stat == -1)
@@ -364,13 +398,14 @@ void setip () {
 		if (stat != 1)
 			raise_error("inet_pton()");
 	
-		ifr.ifr_addr = *(struct sockaddr *) &addr;
 
 		/* Set the mask */
 		if (ioctl(s, SIOCSIFNETMASK, (caddr_t) &ifr) == -1)
 			raise_error("ioctl() - SIOCSIFADDR");
 	}
 	
+
+
 	/* Get the current flags */
 	if (ioctl(s, SIOCGIFFLAGS, &ifr) == -1)
 		raise_error("ioctl() - SIOCGIFFLAGS");
@@ -387,8 +422,40 @@ void setip () {
 
 
 
+
 /*
 	process_ip: This function takes an ip address and possibly a mask given in CDIR notation
+				and splits it into two strings containing an ip address and a mask in netmask 
+				notation. If the no mask is included, it zeroes the mask buffer which then
+				can be checked by caller to see if a mask was generated
+
+				It uses two functions process_ipv4 and process_ipv6 to parse the two types.
+	
+	input:  char * <ip and mask in CDIR notation>
+			char * <buffer for ip address string>
+			char * <buffer for mask string>
+	
+	returns: void
+*/
+
+
+void process_ip (char * in_ip, char * ip, char * mask) {
+	
+	switch (in.over_n) {
+	case AF_INET:	process_ipv4(in_ip, ip, mask);
+					break;
+	case AF_INET6:	process_ipv6(in_ip, ip, mask);
+					break;
+	default:		raise_error("process_ip: invalid network prot");
+	}
+}
+
+
+
+
+
+/*
+	process_ipv4: This function takes an ipv4 address and possibly a mask given in CDIR notation
 				and splits it into two strings containing an ip address and a mask in netmask 
 				notation. If the no mask is included, it zeroes the mask buffer which then
 				can be checked by caller to see if a mask was generated
@@ -401,7 +468,7 @@ void setip () {
 */
 
 
-void process_ip (char * in_ip, char * ip, char * mask) {
+void process_ipv4 (char * in_ip, char * ip, char * mask) {
 
 	int i;
 	bzero(ip, IP_MAX_LEN);
@@ -476,6 +543,32 @@ void process_ip (char * in_ip, char * ip, char * mask) {
 	if (in.verbose == 1)
 		printf("Prepared mask is %s\n",mask);
 }
+
+
+
+
+
+/*
+	process_ipv6: This function takes an ipv6 address and possibly a mask given in CDIR notation
+				and splits it into two strings containing an ip address and a mask in netmask 
+				notation. If the no mask is included, it zeroes the mask buffer which then
+				can be checked by caller to see if a mask was generated
+	
+	input:  char * <ip and mask in CDIR notation>
+			char * <buffer for ip address string>
+			char * <buffer for mask string>
+	
+	returns: void
+*/
+
+
+void process_ipv6 (char * in_ip, char * ip, char * mask) {
+
+	return;
+}
+
+
+
 
 
 
@@ -597,9 +690,9 @@ void tunnel (int sockfd, int tunfd) {
 	cause we are running infinite loops in the threads and not catching any signals
 	to exit graacefully) */
 	pthread_join(t2n, NULL);
-	printf("Thread tun-to-network returned\n");
+	printf("Thread tun-to-network returned %d\n",ret1);
 	pthread_join(n2t, NULL);
-	printf("Thread network-to-tun returned\n");
+	printf("Thread network-to-tun returned %d\n",ret2);
 
 }
 
@@ -1049,7 +1142,7 @@ int net_connect() {
 
 int client_connect () {
 
-	struct addrinfo * servptr, *s;
+	struct addrinfo *s;
 	int ret, sockfd;
 	memset(&in.server, 0, sizeof(in.server));
 
