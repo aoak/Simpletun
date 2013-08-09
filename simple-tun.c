@@ -322,6 +322,13 @@ void setip () {
 	int stat = 0, s;
 
 	char ipad[IP_MAX_LEN];
+	
+	struct in6_ifreq {
+		struct in6_addr ifr6_addr;
+		__u32 ifr6_prefixlen;
+		unsigned int ifr6_ifindex;
+	} ifr6;
+
 
 	process_ip(in.dev.ip_addr, ipad, in.dev.ip_mask);
 	strcpy(in.dev.ip_addr, ipad);
@@ -350,7 +357,14 @@ void setip () {
 					addr6.sin6_family = AF_INET6;
 					/* Convert ip to network binary */
 					stat = inet_pton(addr6.sin6_family, in.dev.ip_addr, &addr6.sin6_addr);
-					ifr.ifr_addr = *(struct sockaddr *) &addr6;
+					ifr6.ifr6_addr = *(struct in6_addr *) &addr6.sin6_addr;
+					
+					if (ioctl(s, SIOGIFINDEX, &ifr) < 0)
+						raise_error("ioctl() - SIOGIFINDEX");
+
+					ifr6.ifr6_ifindex = ifr.ifr_ifindex;
+					ifr6.ifr6_prefixlen = 64;
+
 					break;
 	default:		raise_error("invalid network prot");
 	}
@@ -364,13 +378,19 @@ void setip () {
 	if (stat != 1)
 		raise_error("inet_pton()");
 	
-	char dum[BUFF_SIZE];
-	if (inet_ntop(in.over_n, &ifr.ifr_addr, dum, BUFF_SIZE) != NULL)
-		printf("name = %s, ip = %s\n",ifr.ifr_name,dum);
 
 	/* Set ip */
-	if (ioctl(s, SIOCSIFADDR, (caddr_t) &ifr) == -1)
-		raise_error("ioctl() - SIOCSIFADDR");
+	switch (in.over_n) {
+
+	case AF_INET:	if (ioctl(s, SIOCSIFADDR, (caddr_t) &ifr) == -1)
+						raise_error("ioctl() - SIOCSIFADDR");
+					break;
+	
+	case AF_INET6:	if (ioctl(s, SIOCSIFADDR, &ifr6) < 0)
+						raise_error("ioctl() - SIOCSIFADDR");
+					break;
+	default:		raise_error("invalid network prot");
+	}
 
 
 
@@ -379,33 +399,35 @@ void setip () {
 	/* If a mask was generated for us, then set it */
 	if (in.dev.ip_mask[0] != 0) {
 
-		/* Convert mask to net binary. Need logic here to adjust it dynamically
-		too */
+	/* Convert mask to net binary. Need logic here to adjust it dynamically
+	too */
 
-		switch (in.over_n) {
+	switch (in.over_n) {
 
-		case AF_INET:	stat = inet_pton(addr4.sin_family, in.dev.ip_mask, &addr4.sin_addr);
-						ifr.ifr_addr = *(struct sockaddr *) &addr4;
-						break;
-		case AF_INET6:	stat = inet_pton(addr6.sin6_family, in.dev.ip_mask, &addr6.sin6_addr);
-						ifr.ifr_addr = *(struct sockaddr *) &addr6;
-						break;
-		default:		raise_error("invalid network prot");
-		}
+	case AF_INET:   stat = inet_pton(addr4.sin_family, in.dev.ip_mask, &addr4.sin_addr);
+					ifr.ifr_addr = *(struct sockaddr *) &addr4;
+					break;
+
+	case AF_INET6:  stat = inet_pton(addr6.sin6_family, in.dev.ip_mask, &addr6.sin6_addr);
+					ifr.ifr_addr = *(struct sockaddr *) &addr6;
+					break;
+
+	default:        raise_error("invalid network prot");
+	}
 
 
-		if (stat == 0)
-			raise_error("inet_pton() - invalid ip");
-		if (stat == -1)
-			raise_error("inet_pton() - invalid family");
+	if (stat == 0)
+		raise_error("inet_pton() - invalid ip");
+	if (stat == -1)
+		raise_error("inet_pton() - invalid family");
 
-		if (stat != 1)
-			raise_error("inet_pton()");
-	
+	if (stat != 1)
+		raise_error("inet_pton()");
 
-		/* Set the mask */
-		if (ioctl(s, SIOCSIFNETMASK, (caddr_t) &ifr) == -1)
-			raise_error("ioctl() - SIOCSIFADDR");
+
+	/* Set the mask */
+	if (ioctl(s, SIOCSIFNETMASK, (caddr_t) &ifr) == -1)
+		raise_error("ioctl() - SIOCSIFADDR");
 	}
 	
 
