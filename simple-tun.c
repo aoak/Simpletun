@@ -127,6 +127,7 @@ void setip ();
 void process_ip (char * , char * , char * );
 void process_ipv4 (char * , char * , char * );
 void process_ipv6 (char * , char * , char * );
+int itox (unsigned char , char * );
 int itoa (unsigned char , char * );
 
 
@@ -318,7 +319,7 @@ void setip () {
 	struct ifreq ifr;
 	struct sockaddr_in addr4;
 	struct sockaddr_in6 addr6;
-	int stat, s;
+	int stat = 0, s;
 
 	char ipad[IP_MAX_LEN];
 
@@ -363,6 +364,9 @@ void setip () {
 	if (stat != 1)
 		raise_error("inet_pton()");
 	
+	char dum[BUFF_SIZE];
+	if (inet_ntop(in.over_n, &ifr.ifr_addr, dum, BUFF_SIZE) != NULL)
+		printf("name = %s, ip = %s\n",ifr.ifr_name,dum);
 
 	/* Set ip */
 	if (ioctl(s, SIOCSIFADDR, (caddr_t) &ifr) == -1)
@@ -564,12 +568,122 @@ void process_ipv4 (char * in_ip, char * ip, char * mask) {
 
 void process_ipv6 (char * in_ip, char * ip, char * mask) {
 
-	return;
+	int i;
+	bzero(ip, IP_MAX_LEN);
+	bzero(mask, IP_MAX_LEN);
+
+	/* Assume that ip address is either just an ip address or ip
+	address appended with slash number notation specifying the mask
+	For example, it can be 100.100.0.1 or 100.100.0.1/24 */
+
+	for (i=0; i < IP_MAX_LEN; i++) {
+
+		/* Use '/' as character ending the ip part. If there is no /XX
+		in input, then the string will end with a null character which 
+		will break this loop anyway */
+		ip[i] = (in_ip[i] == '/') ? '\0' : in_ip[i];	
+		if ( ip[i] == '\0')
+			break;
+	}
+
+	if (in.verbose == 1)
+		printf("Given ip is %s\n",ip);
+
+	/* If we are not given a mask, don't do anything */
+	if (in_ip[i] != '/')
+		return;
+	
+	int mask_bits;
+	mask_bits = atoi(&in_ip[++i]);
+
+	if (in.verbose == 1)
+		printf("Given %d mask bits\n",mask_bits);
+	
+	int j = 0;
+	int total_bytes = 0;				/* Number of bytes in the address */
+	unsigned char mask_part = (~0);		/* set mask as all ones (ff) */
+
+	i = mask_bits;
+
+	/* We have to parse the ip till the time there are 16 bytes ipv) */
+	while (total_bytes < 16) {
+		
+		if ( (i/8) > 0 ) {
+
+			/* If mask bits are more than 8, that means we need ff as mask */
+			j += itox(mask_part, &mask[j]);
+			total_bytes++;
+			i -= 8;
+
+		} else if ( (i%8) > 0) {
+
+			/* If more mask bits remain, we need to prepare the mask by shifting
+			255 left by (8-mask_bits) times */
+			mask_part <<= (8-i);
+			j += itox(mask_part, &mask[j]);
+			total_bytes++;
+			i = 0;
+
+		} else {
+
+			/* This case means we have created the mask string like ffff:ffaa
+			but its not valid yet. We need to append it with zeros to make 
+			something like ffff:ffaa:0:0:0...:0 */
+			j += itoa(0,&mask[j]);
+			total_bytes += 2;
+		}
+
+		/* Separate the parts with ':' and end ip string with null character */
+		if ((total_bytes % 2) == 0)
+			mask[j++] = (total_bytes < 16) ? ':' : '\0';
+	}
+
+	if (in.verbose == 1)
+		printf("Prepared mask is %s\n",mask);
 }
 
 
+/*
+	itox: This function takes an unsigned byte and converts it into a string with
+		  each nibble represented as a hex number.
+		  In this program, it assumes input to be unsigned integer because the
+		  calling functions will be doing some bitwise operations and we dont
+		  want to mess around with signed representation.
+
+	input:  unsigned char <integer to convert>
+			char * <buffer to hold converted string assumed to be large enough>
+	
+	returns: int <The length of converted string>
+*/
 
 
+int itox (unsigned char a, char * i) {
+
+	unsigned char t = 0;
+	int ind = 0;
+	int shft_size = sizeof(a) * 4;
+
+
+	/* First convert the upper half */
+	t = a & ((~0) << shft_size);
+	t >>= shft_size;
+
+	if (t > 9)
+		i[ind++] = 'a' + (t - 10);
+	else
+		i[ind++] = '0' + t;
+	
+	/* Now convert the lower half */
+	t = a & (((~0) << shft_size) ^ (~0));
+
+	if (t > 9)
+		i[ind++] = 'a' + (t - 10);
+	else
+		i[ind++] = '0' + t;
+	
+	i[ind] = '\0';
+	return 2;
+}
 
 
 /*
