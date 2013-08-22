@@ -8,6 +8,25 @@ The program uses multithreading (pthread) to read and write between two devices 
 Although the code is written by me, I have referred to and am influenced by article and code snippets on http://backreference.org/2010/03/26/tuntap-interface-tutorial/ 
 
 
+License Info
+-------------
+
+Copyright (C) 2013  Aniket Oak
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
 simple-tun.c
 -------------
 

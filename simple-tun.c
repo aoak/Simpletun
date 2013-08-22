@@ -1,18 +1,54 @@
 /*
 simple-tun.c
+______________________________________________________________________________________________
 
-Author: Aniket Oak
 Created: 21-Jun-2013
 Last modified: 08-Aug-2013
+______________________________________________________________________________________________
 
 The purpose of this program is to create a tun device and set up a tunnel over a network using ip 
 vesion 4 or version 6 and use it to tunnel the packets between two tun devices keeping the program 
 using the tun device completely oblivious of the fact that such a tunnel exists. 
 The packets tunneled over the network can be ip version 4 or version 6.
 
+This program is written for academic purposes, has few validations etc. and can have bugs. 
+I take no responsibility whatsoever for what the program might do. The program has been written 
+mostly for learning purposes, and can be used in the hope that is useful, but everything
+is to be taken "as is" and without any kind of warranty, implicit or explicit. See the LICENSE INFO
+part below for further details and the file COPYING that accompanies this program. 
+
+Suggestions to improve the program and bug reports are welcome and I will try to incorporate 
+any contributions. 
+
+Small parts of code are influenced by linux documentation on tun/tap and a tutorial on backreference.org
+
+	- https://www.kernel.org/doc/Documentation/networking/tuntap.txt
+	- http://backreference.org/2010/03/26/tuntap-interface-tutorial/
+
 code can be found at: https://github.com/aoak/Simpletun
 
-For detailed info, check the README file in above repo.
+For detailed info about the program, check the README file in above repo.
+______________________________________________________________________________________________
+
+LICENSE INFO
+
+Copyright (C) 2013  Aniket Oak
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+______________________________________________________________________________________________
+
 */
 
 
@@ -920,6 +956,7 @@ void * sock_to_tun (void * ptr) {
 			}
 
 			/* Write what we read from socket onto the tun device */
+
 			wrote_bytes = write(tun_fd, buff, read_bytes);
 			if (wrote_bytes < read_bytes)
 				raise_error("write() failed on tun");
@@ -1006,6 +1043,11 @@ void * tun_to_sock (void * ptr) {
 				which is otherwise difficult as TCP makes the data appear as a stream */
 				len = htons(read_bytes);
 				wrote_bytes = write(sock_fd, &len, sizeof(len));
+
+				if (wrote_bytes < 0)
+					raise_error("write (len) on socket failed");
+
+				wrote_bytes = write(sock_fd, buff, read_bytes);
 			}
 
 			if (wrote_bytes < read_bytes)
@@ -1302,8 +1344,8 @@ int client_connect () {
 		if (in.over_t == SOCK_DGRAM) {
 			/* in case of UDP, if we are here, means we have got the socket.
 			so break out of the loop now */
-			break;
 			in.serv_ptr = s;		/* Store the server address info for UDP sendto() call later */
+			break;
 		}
 		else
 			/* For TCP, we need to do a connect() call with server over 
